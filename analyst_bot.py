@@ -4,6 +4,7 @@ import aiohttp
 from datetime import datetime
 from telegram import Bot
 from telegram.constants import ParseMode
+from aiohttp import web
 import logging
 import traceback
 
@@ -11,6 +12,7 @@ import traceback
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 CMC_API_KEY = os.environ.get('CMC_API_KEY')
+PORT = int(os.environ.get('PORT', 10000))
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -390,9 +392,23 @@ async def send_updates():
             logger.info("🔄 Перезапуск через 60 секунд...")
             await asyncio.sleep(60)
 
-async def health_check():
-    """Простая функция для проверки работы"""
-    return "🚀 MarvelMarket Stats Bot is running!"
+async def health_check(request):
+    """Простой HTTP endpoint для проверки порта"""
+    return web.Response(text="🚀 MarvelMarket Stats Bot is running!")
+
+async def start_http_server():
+    """Запускаем минимальный HTTP сервер только для проверки порта"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    logger.info(f"🌐 HTTP сервер запущен на порту {PORT} (только для проверки Render)")
+    return runner
 
 async def main():
     # ПРОВЕРЯЕМ ПЕРЕМЕННЫЕ ПРИ СТАРТЕ
@@ -407,10 +423,21 @@ async def main():
     
     logger.info("✅ Все переменные окружения установлены")
     
-    # Запускаем ОДНУ фоновую задачу
+    # Запускаем HTTP сервер на 30 секунд чтобы Render увидел порт
+    logger.info("🔄 Запускаем HTTP сервер для проверки порта...")
+    runner = await start_http_server()
+    
+    # Ждем 30 секунд чтобы Render успел проверить порт
+    logger.info("⏳ Ожидаем 30 секунд для проверки порта Render...")
+    await asyncio.sleep(30)
+    
+    # Останавливаем HTTP сервер - он больше не нужен
+    logger.info("🛑 Останавливаем HTTP сервер...")
+    await runner.cleanup()
+    
+    # Запускаем основную задачу
     logger.info("🚀 Запуск основной задачи отправки котировок...")
     await send_updates()
 
 if __name__ == "__main__":
-    # Простой запуск без HTTP сервера
     asyncio.run(main())
