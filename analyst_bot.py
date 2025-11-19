@@ -4,7 +4,6 @@ import aiohttp
 from datetime import datetime
 from telegram import Bot
 from telegram.constants import ParseMode
-from aiohttp import web
 import logging
 import traceback
 
@@ -12,7 +11,6 @@ import traceback
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 CMC_API_KEY = os.environ.get('CMC_API_KEY')
-PORT = int(os.environ.get('PORT', 10000))
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -430,30 +428,6 @@ async def send_updates():
             logger.info("🔄 Перезапуск через 60 секунд...")
             await asyncio.sleep(60)
 
-async def health_check(request):
-    return web.Response(text="🚀 MarvelMarket Stats Bot is running!")
-
-async def start_background_tasks(app):
-    """ЗАПУСКАЕМ ФОНОВУЮ ЗАДАЧУ ПРИ СТАРТЕ"""
-    logger.info("🎬 Запуск фоновой задачи отправки котировок...")
-    app['bot_task'] = asyncio.create_task(send_updates())
-
-async def cleanup_background_tasks(app):
-    if 'bot_task' in app:
-        app['bot_task'].cancel()
-        try:
-            await app['bot_task']
-        except asyncio.CancelledError:
-            pass
-
-async def create_app():
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    app.router.add_get('/health', health_check)
-    app.on_startup.append(start_background_tasks)
-    app.on_cleanup.append(cleanup_background_tasks)
-    return app
-
 async def main():
     # ПРОВЕРЯЕМ ПЕРЕМЕННЫЕ ПРИ СТАРТЕ
     logger.info("🔍 Проверка переменных окружения...")
@@ -467,19 +441,9 @@ async def main():
     
     logger.info("✅ Все переменные окружения установлены")
     
-    app = await create_app()
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    
-    logger.info(f"🌐 HTTP сервер запущен на порту {PORT}")
-    logger.info("🚀 MarvelMarket Stats Bot ЗАПУЩЕН И РАБОТАЕТ!")
-    
-    # Бесконечный цикл для поддержания работы
-    while True:
-        await asyncio.sleep(3600)
+    # Запускаем ОДНУ фоновую задачу без HTTP сервера
+    logger.info("🚀 Запуск основной задачи отправки котировок...")
+    await send_updates()
 
 if __name__ == "__main__":
     asyncio.run(main())
