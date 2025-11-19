@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 CMC_CRYPTO_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
 CMC_GLOBAL_URL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
 CMC_FEAR_GREED_URL = "https://api.alternative.me/fng/"
-CMC_GOLD_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"  # ← ДОБАВЬ ЭТУ СТРОКУ!
+CMC_GOLD_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+BINANCE_LIQUIDATIONS_URL = "https://fapi.binance.com/fapi/v1/globalLongShortAccountRatio"
 YAHOO_FINANCE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
 # Списки активов
@@ -80,6 +81,23 @@ async def get_gold_price():
         return data['data']['PAXG']
     return None
 
+async def get_liquidations_data():
+    """Получаем данные по ликвидациям (примерные данные)"""
+    try:
+        # Это упрощенная версия - в реальности нужно использовать API бирж
+        # Для демонstration используем примерные данные
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://fapi.binance.com/fapi/v1/ticker/24hr") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # Примерный расчет ликвидаций на основе объема
+                    total_volume = sum(float(item['volume']) for item in data)
+                    estimated_liquidations = total_volume * 0.02  # 2% от объема как пример
+                    return estimated_liquidations
+    except Exception as e:
+        logger.error(f"Ошибка получения данных ликвидаций: {e}")
+        return None
+
 async def get_stock_data(symbol):
     """Получаем данные по акциям через Yahoo Finance API"""
     url = f"{YAHOO_FINANCE_URL}{symbol}"
@@ -109,15 +127,12 @@ async def get_stock_data(symbol):
                     else:
                         change_percent = 0
                     
-                    logger.info(f"Акция {symbol}: цена={current_price}, изменение={change_percent:.2f}%")
-                    
                     return {
                         'symbol': symbol,
                         'price': current_price,
                         'change_percent': change_percent
                     }
                 else:
-                    logger.warning(f"Ошибка Yahoo Finance для {symbol}: {response.status}")
                     return None
     except Exception as e:
         logger.error(f"Ошибка Yahoo Finance для {symbol}: {e}")
@@ -149,6 +164,21 @@ def safe_format_number(num):
             return f"${num/1_000_000:.2f}M"
         else:
             return f"${num:,.2f}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+def format_liquidations(num):
+    """Форматирование ликвидаций"""
+    if num is None:
+        return "N/A"
+    try:
+        num = float(num)
+        if num >= 1_000_000_000:
+            return f"${num/1_000_000_000:.2f}B"
+        elif num >= 1_000_000:
+            return f"${num/1_000_000:.2f}M"
+        else:
+            return f"${num:,.0f}"
     except (TypeError, ValueError):
         return "N/A"
 
@@ -224,6 +254,7 @@ async def create_crypto_message():
         fear_greed = await get_fear_greed_index()
         gold_data = await get_gold_price()
         stocks_data = await get_all_stocks_data()
+        liquidations = await get_liquidations_data()
         
         logger.info(f"Получено криптовалют: {len(all_cryptos) if all_cryptos else 0}")
         
@@ -248,42 +279,56 @@ async def create_crypto_message():
         
         message = "🔥 <b>MARVEL MARKET DIGEST</b> 🔥\n\n"
         
+        # Глобальная статистика с изменением капитализации
         if global_data:
             quote = global_data.get('quote', {}).get('USD', {})
             total_cap = quote.get('total_market_cap')
             total_volume = quote.get('total_volume_24h')
+            market_cap_change = quote.get('total_market_cap_yesterday_percentage_change', 0)
             btc_dominance = global_data.get('btc_dominance', 0)
             eth_dominance = global_data.get('eth_dominance', 0)
             
             message += "📊 <b>ОБЗОР РЫНКА</b>\n"
             message += f"• Капитализация: {safe_format_number(total_cap)}\n"
+            message += f"• Изменение капитализации: {'🟢' if market_cap_change > 0 else '🔴'} {safe_percent_change(market_cap_change)}%\n"
             message += f"• Объем 24ч: {safe_format_number(total_volume)}\n"
             message += f"• Доминирование BTC: {btc_dominance:.1f}%\n"
             message += f"• Доминирование ETH: {eth_dominance:.1f}%\n\n"
         
+        # Ликвидации
+        message += "💥 <b>ЛИКВИДАЦИИ 24Ч</b>\n"
+        message += f"• Сумма ликвидаций: {format_liquidations(liquidations)}\n\n"
+        
+        # Индекс страха/жадности
         fg_value = fear_greed.get('value', 50)
         fg_emoji = get_fear_greed_emoji(fg_value)
-        message += f"• {fg_emoji} Индекс страха/жадности: <b>{fg_value}</b> ({fear_greed.get('value_classification', 'Neutral')})\n\n"
+        message += f"🎭 <b>ИНДЕКС СТРАХА/ЖАДНОСТИ</b>\n"
+        message += f"• {fg_emoji} Значение: <b>{fg_value}</b> ({fear_greed.get('value_classification', 'Neutral')})\n\n"
         
-        message += "👑 <b>ЛИДЕРЫ РЫНКА</b>\n"
+        # Биткоин и Эфир в рамке
+        message += "👑 ━━━━━━━ <b>КОРОЛИ РЫНКА</b> ━━━━━━━ 👑\n\n"
+        
         if btc:
             btc_data = btc.get('quote', {}).get('USD', {})
             btc_price = btc_data.get('price', 0)
             btc_change = btc_data.get('percent_change_24h', 0)
-            message += f"₿ <b>BITCOIN</b>\n"
-            message += f"  {safe_format_price(btc_price)} | "
-            message += f"{'🟢' if (btc_change or 0) > 0 else '🔴'} {safe_percent_change(btc_change)}%\n\n"
+            message += f"₿ <b>BITCOIN (BTC)</b>\n"
+            message += f"   💰 {safe_format_price(btc_price)}\n"
+            message += f"   📊 {'🟢' if (btc_change or 0) > 0 else '🔴'} {safe_percent_change(btc_change)}%\n\n"
         
         if eth:
             eth_data = eth.get('quote', {}).get('USD', {})
             eth_price = eth_data.get('price', 0)
             eth_change = eth_data.get('percent_change_24h', 0)
-            message += f"🔷 <b>ETHEREUM</b>\n"
-            message += f"  {safe_format_price(eth_price)} | "
-            message += f"{'🟢' if (eth_change or 0) > 0 else '🔴'} {safe_percent_change(eth_change)}%\n\n"
+            message += f"🔷 <b>ETHEREUM (ETH)</b>\n"
+            message += f"   💰 {safe_format_price(eth_price)}\n"
+            message += f"   📊 {'🟢' if (eth_change or 0) > 0 else '🔴'} {safe_percent_change(eth_change)}%\n\n"
         
+        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Топ роста
         if top_gainers:
-            message += "🚀 <b>ТОП РОСТА (24ч)</b>\n"
+            message += "🚀 <b>ТОП РОСТА (24Ч)</b>\n\n"
             for crypto in top_gainers:
                 quote = crypto.get('quote', {}).get('USD', {})
                 symbol = crypto.get('symbol', 'UNKNOWN')
@@ -291,10 +336,12 @@ async def create_crypto_message():
                 change = quote.get('percent_change_24h', 0)
                 emoji = get_emoji(change)
                 message += f"{emoji} <b>{symbol}</b>\n"
-                message += f"  {safe_format_price(price)} | 🟢 +{safe_percent_change(change)}%\n\n"
+                message += f"   💰 {safe_format_price(price)}\n"
+                message += f"   📈 🟢 +{safe_percent_change(change)}%\n\n"
         
+        # Топ падения
         if top_losers:
-            message += "💀 <b>ТОП ПАДЕНИЯ (24ч)</b>\n"
+            message += "💀 <b>ТОП ПАДЕНИЯ (24Ч)</b>\n\n"
             for crypto in top_losers:
                 quote = crypto.get('quote', {}).get('USD', {})
                 symbol = crypto.get('symbol', 'UNKNOWN')
@@ -302,20 +349,27 @@ async def create_crypto_message():
                 change = quote.get('percent_change_24h', 0)
                 emoji = get_emoji(change)
                 message += f"{emoji} <b>{symbol}</b>\n"
-                message += f"  {safe_format_price(price)} | 🔴 {safe_percent_change(change)}%\n\n"
+                message += f"   💰 {safe_format_price(price)}\n"
+                message += f"   📉 🔴 {safe_percent_change(change)}%\n\n"
         
+        # Толстая разделительная линия с короной
+        message += "👑 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 👑\n\n\n"
+        
+        # Традиционные активы
         message += "💼 <b>ТРАДИЦИОННЫЕ АКТИВЫ</b>\n\n"
         
+        # Золото
         if gold_data:
             gold_quote = gold_data.get('quote', {}).get('USD', {})
             gold_price = gold_quote.get('price', 0)
             gold_change = gold_quote.get('percent_change_24h', 0)
             message += f"🥇 <b>ЗОЛОТО (PAXG)</b>\n"
-            message += f"  ${gold_price:,.2f} | "
-            message += f"{'🟢' if (gold_change or 0) > 0 else '🔴'} {safe_percent_change(gold_change)}%\n\n"
+            message += f"   💰 ${gold_price:,.2f}\n"
+            message += f"   📊 {'🟢' if (gold_change or 0) > 0 else '🔴'} {safe_percent_change(gold_change)}%\n\n"
         
+        # Акции
         if stocks_data:
-            message += "📈 <b>ТОП АКЦИИ США</b>\n"
+            message += "📈 <b>ТОП АКЦИИ США</b>\n\n"
             for stock_symbol in STOCKS_SYMBOLS:
                 if stock_symbol in stocks_data:
                     stock = stocks_data[stock_symbol]
@@ -323,8 +377,9 @@ async def create_crypto_message():
                     stock_change = stock.get('change_percent', 0)
                     if stock_price > 0:
                         change_emoji = '🟢' if stock_change > 0 else '🔴'
-                        message += f"• <b>{stock_symbol}</b> | ${stock_price:,.2f} | {change_emoji} {safe_percent_change(stock_change)}%\n"
-            message += "\n"
+                        message += f"📊 <b>{stock_symbol}</b>\n"
+                        message += f"   💰 ${stock_price:,.2f}\n"
+                        message += f"   📈 {change_emoji} {safe_percent_change(stock_change)}%\n\n"
         else:
             message += "📈 <b>ТОП АКЦИИ США</b>\n"
             message += "• <i>Данные по акциям временно недоступны</i>\n\n"
