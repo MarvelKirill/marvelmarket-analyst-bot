@@ -1,6 +1,7 @@
 import os
 import asyncio
 import aiohttp
+import json
 from datetime import datetime
 from telegram import Bot
 from telegram.constants import ParseMode
@@ -22,7 +23,7 @@ CMC_CRYPTO_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/l
 CMC_GLOBAL_URL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
 CMC_FEAR_GREED_URL = "https://api.alternative.me/fng/"
 CMC_GOLD_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-STOCKS_API_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
+STOCKS_API_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
 MUST_INCLUDE = ['BTC', 'ETH', 'SOL']
 TOP_STOCKS = ['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA']
@@ -70,19 +71,64 @@ async def get_gold_price():
             data = await response.json()
             return data['data']['PAXG']
 
-async def get_stocks_data():
-    symbols = ','.join(TOP_STOCKS)
+async def get_stock_price(symbol):
+    """Получаем данные по одной акции через Yahoo Finance API"""
+    url = f"{STOCKS_API_URL}{symbol}"
     params = {
-        'symbols': symbols,
-        'fields': 'symbol,regularMarketPrice,regularMarketChangePercent,marketCap'
+        'range': '1d',
+        'interval': '1d'
     }
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(STOCKS_API_URL, params=params) as response:
-            data = await response.json()
-            return data['quoteResponse']['results']
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    result = data['chart']['result'][0]
+                    meta = result['meta']
+                    
+                    current_price = meta.get('regularMarketPrice', meta.get('previousClose', 0))
+                    previous_close = meta.get('previousClose', current_price)
+                    
+                    if previous_close and current_price:
+                        change_percent = ((current_price - previous_close) / previous_close) * 100
+                    else:
+                        change_percent = 0
+                    
+                    return {
+                        'symbol': symbol,
+                        'price': current_price,
+                        'change_percent': change_percent,
+                        'market_cap': meta.get('marketCap', 0)
+                    }
+                else:
+                    logger.warning(f"Ошибка получения данных для {symbol}: {response.status}")
+                    return None
+    except Exception as e:
+        logger.warning(f"Ошибка при получении данных акции {symbol}: {e}")
+        return None
+
+async def get_stocks_data():
+    """Получаем данные по всем акциям параллельно"""
+    tasks = [get_stock_price(symbol) for symbol in TOP_STOCKS]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    stocks_data = []
+    for result in results:
+        if isinstance(result, dict) and result is not None:
+            stocks_data.append(result)
+        elif isinstance(result, Exception):
+            logger.warning(f"Исключение при получении данных акции: {result}")
+    
+    return stocks_data
 
 def format_number(num):
+    if num is None:
+        return "N/A"
     if num >= 1_000_000_000_000:
         return f"${num/1_000_000_000_000:.2f}T"
     elif num >= 1_000_000_000:
@@ -93,6 +139,8 @@ def format_number(num):
         return f"${num:,.2f}"
 
 def get_emoji(change):
+    if change is None:
+        return "❓"
     if change > 5:
         return "🚀"
     elif change > 0:
@@ -191,10 +239,13 @@ async def create_stocks_message():
         message += "<b>ТОП АКЦИИ США:</b>\n\n"
         
         for stock in stocks:
+            if not stock:
+                continue
+                
             symbol = stock['symbol']
-            price = stock['regularMarketPrice']
-            change = stock.get('regularMarketChangePercent', 0)
-            market_cap = stock.get('marketCap', 0)
+            price = stock['price']
+            change = stock['change_percent']
+            market_cap = stock.get('market_cap', 0)
             emoji = get_emoji(change)
             
             message += f"{emoji} <b>{symbol}</b>\n"
@@ -211,7 +262,7 @@ async def create_stocks_message():
     
     except Exception as e:
         logger.error(f"Ошибка в create_stocks_message: {e}")
-        return f"❌ Ошибка при получении данных: {str(e)}"
+        return f"❌ Ошибка при получении данных акций: {str(e)}"
 
 async def send_updates():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -254,8 +305,12 @@ async def start_background_tasks(app):
 
 async def cleanup_background_tasks(app):
     # Останавливаем задачу при завершении
-    app['bot_task'].cancel()
-    await app['bot_task']
+    if 'bot_task' in app:
+        app['bot_task'].cancel()
+        try:
+            await app['bot_task']
+        except asyncio.CancelledError:
+            pass
 
 async def create_app():
     app = web.Application()
