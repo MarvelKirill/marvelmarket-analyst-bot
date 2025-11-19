@@ -4,7 +4,6 @@ import aiohttp
 from datetime import datetime
 from telegram import Bot
 from telegram.constants import ParseMode
-from aiohttp import web
 import logging
 import traceback
 
@@ -12,7 +11,6 @@ import traceback
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 CMC_API_KEY = os.environ.get('CMC_API_KEY')
-PORT = int(os.environ.get('PORT', 10000))
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -23,15 +21,11 @@ CMC_CRYPTO_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/l
 CMC_GLOBAL_URL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
 CMC_FEAR_GREED_URL = "https://api.alternative.me/fng/"
 CMC_GOLD_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-BINANCE_LIQUIDATIONS_URL = "https://fapi.binance.com/fapi/v1/globalLongShortAccountRatio"
 YAHOO_FINANCE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
 # Списки активов
 STABLE_COINS = ['USDT', 'USDC', 'BUSD', 'DAI', 'UST']
 STOCKS_SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA']
-
-# Глобальная переменная для отслеживания задачи
-bot_task = None
 
 # ================ ФУНКЦИИ ================
 
@@ -83,20 +77,6 @@ async def get_gold_price():
     if data and 'data' in data and 'PAXG' in data['data']:
         return data['data']['PAXG']
     return None
-
-async def get_liquidations_data():
-    """Получаем данные по ликвидациям (примерные данные)"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://fapi.binance.com/fapi/v1/ticker/24hr") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    total_volume = sum(float(item['volume']) for item in data)
-                    estimated_liquidations = total_volume * 0.02
-                    return estimated_liquidations
-    except Exception as e:
-        logger.error(f"Ошибка получения данных ликвидаций: {e}")
-        return None
 
 async def get_stock_data(symbol):
     """Получаем данные по акциям через Yahoo Finance API"""
@@ -164,21 +144,6 @@ def safe_format_number(num):
             return f"${num/1_000_000:.2f}M"
         else:
             return f"${num:,.2f}"
-    except (TypeError, ValueError):
-        return "N/A"
-
-def format_liquidations(num):
-    """Форматирование ликвидаций"""
-    if num is None:
-        return "N/A"
-    try:
-        num = float(num)
-        if num >= 1_000_000_000:
-            return f"${num/1_000_000_000:.2f}B"
-        elif num >= 1_000_000:
-            return f"${num/1_000_000:.2f}M"
-        else:
-            return f"${num:,.0f}"
     except (TypeError, ValueError):
         return "N/A"
 
@@ -254,7 +219,6 @@ async def create_crypto_message():
         fear_greed = await get_fear_greed_index()
         gold_data = await get_gold_price()
         stocks_data = await get_all_stocks_data()
-        liquidations = await get_liquidations_data()
         
         logger.info(f"Получено криптовалют: {len(all_cryptos) if all_cryptos else 0}")
         
@@ -294,10 +258,6 @@ async def create_crypto_message():
             message += f"• Объем 24ч: {safe_format_number(total_volume)}\n"
             message += f"• Доминирование BTC: {btc_dominance:.1f}%\n"
             message += f"• Доминирование ETH: {eth_dominance:.1f}%\n\n"
-        
-        # Ликвидации
-        message += "💥 <b>ЛИКВИДАЦИИ 24Ч</b>\n"
-        message += f"• Сумма ликвидаций: {format_liquidations(liquidations)}\n\n"
         
         # Индекс страха/жадности
         fg_value = fear_greed.get('value', 50)
@@ -430,33 +390,9 @@ async def send_updates():
             logger.info("🔄 Перезапуск через 60 секунд...")
             await asyncio.sleep(60)
 
-async def health_check(request):
-    return web.Response(text="🚀 MarvelMarket Stats Bot is running!")
-
-async def start_background_tasks(app):
-    """Запускаем фоновую задачу ОДИН раз"""
-    global bot_task
-    if bot_task is None:
-        logger.info("🎬 Запуск фоновой задачи отправки котировок...")
-        bot_task = asyncio.create_task(send_updates())
-
-async def cleanup_background_tasks(app):
-    """Останавливаем задачу при завершении"""
-    global bot_task
-    if bot_task:
-        bot_task.cancel()
-        try:
-            await bot_task
-        except asyncio.CancelledError:
-            pass
-
-async def create_app():
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    app.router.add_get('/health', health_check)
-    app.on_startup.append(start_background_tasks)
-    app.on_cleanup.append(cleanup_background_tasks)
-    return app
+async def health_check():
+    """Простая функция для проверки работы"""
+    return "🚀 MarvelMarket Stats Bot is running!"
 
 async def main():
     # ПРОВЕРЯЕМ ПЕРЕМЕННЫЕ ПРИ СТАРТЕ
@@ -471,19 +407,10 @@ async def main():
     
     logger.info("✅ Все переменные окружения установлены")
     
-    app = await create_app()
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    
-    logger.info(f"🌐 HTTP сервер запущен на порту {PORT}")
-    logger.info("🚀 MarvelMarket Stats Bot ЗАПУЩЕН И РАБОТАЕТ!")
-    
-    # Бесконечный цикл для поддержания работы
-    while True:
-        await asyncio.sleep(3600)
+    # Запускаем ОДНУ фоновую задачу
+    logger.info("🚀 Запуск основной задачи отправки котировок...")
+    await send_updates()
 
 if __name__ == "__main__":
+    # Простой запуск без HTTP сервера
     asyncio.run(main())
