@@ -80,7 +80,8 @@ async def get_stock_price(symbol):
     }
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
     }
     
     try:
@@ -88,16 +89,31 @@ async def get_stock_price(symbol):
             async with session.get(url, params=params, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
+                    
+                    # Проверяем структуру ответа
+                    if 'chart' not in data or 'result' not in data['chart']:
+                        logger.warning(f"Неверная структура данных для {symbol}")
+                        return None
+                    
                     result = data['chart']['result'][0]
                     meta = result['meta']
                     
-                    current_price = meta.get('regularMarketPrice', meta.get('previousClose', 0))
+                    # Получаем текущую цену и цену закрытия предыдущего дня
+                    current_price = meta.get('regularMarketPrice', 0)
                     previous_close = meta.get('previousClose', current_price)
                     
-                    if previous_close and current_price:
+                    # Если есть данные о изменениях, используем их
+                    regular_market_change_percent = meta.get('regularMarketChangePercent', None)
+                    
+                    if regular_market_change_percent is not None:
+                        change_percent = regular_market_change_percent
+                    elif previous_close and current_price and previous_close > 0:
+                        # Вычисляем процент изменения вручную
                         change_percent = ((current_price - previous_close) / previous_close) * 100
                     else:
                         change_percent = 0
+                    
+                    logger.info(f"Акция {symbol}: цена={current_price}, изменение={change_percent:.2f}%")
                     
                     return {
                         'symbol': symbol,
@@ -109,7 +125,7 @@ async def get_stock_price(symbol):
                     logger.warning(f"Ошибка получения данных для {symbol}: {response.status}")
                     return None
     except Exception as e:
-        logger.warning(f"Ошибка при получении данных акции {symbol}: {e}")
+        logger.error(f"Ошибка при получении данных акции {symbol}: {e}")
         return None
 
 async def get_stocks_data():
