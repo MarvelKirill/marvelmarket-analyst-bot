@@ -18,6 +18,9 @@ PORT = int(os.environ.get('PORT', 10000))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Глобальная переменная для отслеживания задачи
+bot_task = None
+
 # ================ API URLs ================
 CMC_CRYPTO_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
 CMC_GLOBAL_URL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
@@ -435,9 +438,13 @@ async def main():
     logger.info("🛑 Останавливаем HTTP сервер...")
     await runner.cleanup()
     
-    # Запускаем основную задачу
+    # Запускаем основную задачу ОДИН РАЗ
     logger.info("🚀 Запуск основной задачи отправки котировок...")
     await send_updates()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Глобальная проверка - запускаем только если задача еще не запущена
+    if bot_task is None:
+        asyncio.run(main())
+    else:
+        logger.info("⚠️ Бот уже запущен, пропускаем дублирующий запуск")
