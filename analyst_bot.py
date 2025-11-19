@@ -11,6 +11,7 @@ import logging
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 CMC_API_KEY = os.environ.get('CMC_API_KEY')
+FINNHUB_API_KEY = os.environ.get('FINNHUB_API_KEY', 'cn5l71pr01qusj7k9e10cn5l71pr01qusj7k9e1g')  # бесплатный ключ
 PORT = int(os.environ.get('PORT', 10000))
 
 # Настройка логирования
@@ -21,12 +22,12 @@ logger = logging.getLogger(__name__)
 CMC_CRYPTO_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
 CMC_GLOBAL_URL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
 CMC_FEAR_GREED_URL = "https://api.alternative.me/fng/"
-CMC_QUOTES_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+CMC_GOLD_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+FINNHUB_URL = "https://finnhub.io/api/v1/quote"
 
 # Списки активов
 STABLE_COINS = ['USDT', 'USDC', 'BUSD', 'DAI', 'UST']
 STOCKS_SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA']
-METALS_SYMBOLS = ['PAXG']  # Золото
 
 # ================ ФУНКЦИИ ================
 
@@ -43,10 +44,10 @@ async def make_cmc_request(url, params=None):
                 if response.status == 200:
                     return await response.json()
                 else:
-                    logger.error(f"Ошибка CMC API: {response.status}")
+                    logger.error(f"Ошибка CMC API {url}: {response.status}")
                     return None
     except Exception as e:
-        logger.error(f"Ошибка запроса к CMC: {e}")
+        logger.error(f"Ошибка запроса к CMC {url}: {e}")
         return None
 
 async def get_crypto_data(limit=100):
@@ -71,11 +72,62 @@ async def get_fear_greed_index():
         logger.error(f"Ошибка получения индекса страха/жадности: {e}")
         return {'value': 50, 'value_classification': 'Neutral'}
 
-async def get_specific_assets(symbols):
-    """Получаем данные по конкретным активам (акции, металлы)"""
-    params = {'symbol': ','.join(symbols), 'convert': 'USD'}
-    data = await make_cmc_request(CMC_QUOTES_URL, params)
-    return data['data'] if data else {}
+async def get_gold_price():
+    """Получаем цену золота из CMC"""
+    params = {'symbol': 'PAXG', 'convert': 'USD'}
+    data = await make_cmc_request(CMC_GOLD_URL, params)
+    if data and 'data' in data and 'PAXG' in data['data']:
+        return data['data']['PAXG']
+    return None
+
+async def get_stock_data(symbol):
+    """Получаем данные по акциям через Finnhub API"""
+    params = {
+        'symbol': symbol,
+        'token': FINNHUB_API_KEY
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(FINNHUB_URL, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    current_price = data.get('c', 0)  # текущая цена
+                    previous_close = data.get('pc', current_price)  # цена закрытия предыдущего дня
+                    change = data.get('d', 0)  # изменение цены
+                    change_percent = data.get('dp', 0)  # изменение в процентах
+                    
+                    # Если процент изменения не получен, вычисляем вручную
+                    if change_percent == 0 and previous_close and previous_close > 0 and current_price > 0:
+                        change_percent = ((current_price - previous_close) / previous_close) * 100
+                    
+                    logger.info(f"Акция {symbol}: цена={current_price}, изменение={change_percent:.2f}%")
+                    
+                    return {
+                        'symbol': symbol,
+                        'price': current_price,
+                        'change_percent': change_percent,
+                        'change_amount': change
+                    }
+                else:
+                    logger.warning(f"Ошибка Finnhub для {symbol}: {response.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"Ошибка Finnhub для {symbol}: {e}")
+        return None
+
+async def get_all_stocks_data():
+    """Получаем данные по всем акциям"""
+    tasks = [get_stock_data(symbol) for symbol in STOCKS_SYMBOLS]
+    results = await asyncio.gather(*tasks)
+    
+    stocks_data = {}
+    for result in results:
+        if result and result['price'] > 0:  # Проверяем что данные валидные
+            stocks_data[result['symbol']] = result
+    
+    return stocks_data
 
 def safe_format_number(num):
     """Безопасное форматирование больших чисел"""
@@ -150,11 +202,12 @@ def safe_format_price(price):
 def safe_percent_change(change):
     """Безопасное форматирование процентного изменения"""
     if change is None:
-        return "0.00"
+        return "+0.00"
     try:
-        return f"{float(change):+.2f}"
+        change_float = float(change)
+        return f"{change_float:+.2f}"
     except (TypeError, ValueError):
-        return "0.00"
+        return "+0.00"
 
 async def create_crypto_message():
     try:
@@ -164,33 +217,35 @@ async def create_crypto_message():
         all_cryptos = await get_crypto_data(100)
         global_data = await get_global_metrics()
         fear_greed = await get_fear_greed_index()
-        specific_assets = await get_specific_assets(STOCKS_SYMBOLS + METALS_SYMBOLS)
+        gold_data = await get_gold_price()
+        stocks_data = await get_all_stocks_data()
         
         logger.info(f"Получено криптовалют: {len(all_cryptos) if all_cryptos else 0}")
         logger.info(f"Глобальные данные: {global_data is not None}")
-        logger.info(f"Активы: {len(specific_assets) if specific_assets else 0}")
+        logger.info(f"Золото: {gold_data is not None}")
+        logger.info(f"Акции: {len(stocks_data)}")
         
         if not all_cryptos:
             return "❌ Ошибка при получении данных крипторынка"
         
         # Фильтруем криптовалюты (убираем стейбкоины)
-        filtered_cryptos = [c for c in all_cryptos if c['symbol'] not in STABLE_COINS]
+        filtered_cryptos = [c for c in all_cryptos if c.get('symbol') not in STABLE_COINS]
         
         # Находим BTC и ETH
-        btc = next((c for c in filtered_cryptos if c['symbol'] == 'BTC'), None)
-        eth = next((c for c in filtered_cryptos if c['symbol'] == 'ETH'), None)
+        btc = next((c for c in filtered_cryptos if c.get('symbol') == 'BTC'), None)
+        eth = next((c for c in filtered_cryptos if c.get('symbol') == 'ETH'), None)
         
         # Топ роста (исключая BTC и ETH)
         top_gainers = sorted(
-            [c for c in filtered_cryptos if c['symbol'] not in ['BTC', 'ETH']],
-            key=lambda x: x['quote']['USD'].get('percent_change_24h', 0),
+            [c for c in filtered_cryptos if c.get('symbol') not in ['BTC', 'ETH']],
+            key=lambda x: x.get('quote', {}).get('USD', {}).get('percent_change_24h', 0) or 0,
             reverse=True
         )[:5]
         
         # Топ падения (исключая BTC и ETH)
         top_losers = sorted(
-            [c for c in filtered_cryptos if c['symbol'] not in ['BTC', 'ETH']],
-            key=lambda x: x['quote']['USD'].get('percent_change_24h', 0)
+            [c for c in filtered_cryptos if c.get('symbol') not in ['BTC', 'ETH']],
+            key=lambda x: x.get('quote', {}).get('USD', {}).get('percent_change_24h', 0) or 0
         )[:5]
         
         message = "🔥 <b>MARVEL MARKET DIGEST</b> 🔥\n\n"
@@ -217,75 +272,71 @@ async def create_crypto_message():
         # Биткоин и Эфир
         message += "👑 <b>ЛИДЕРЫ РЫНКА</b>\n"
         if btc:
-            btc_data = btc['quote']['USD']
+            btc_data = btc.get('quote', {}).get('USD', {})
             btc_price = btc_data.get('price', 0)
             btc_change = btc_data.get('percent_change_24h', 0)
             message += f"₿ <b>BITCOIN</b>\n"
             message += f"  {safe_format_price(btc_price)} | "
-            message += f"{'🟢' if btc_change > 0 else '🔴'} {safe_percent_change(btc_change)}%\n"
+            message += f"{'🟢' if (btc_change or 0) > 0 else '🔴'} {safe_percent_change(btc_change)}%\n"
         
         if eth:
-            eth_data = eth['quote']['USD']
+            eth_data = eth.get('quote', {}).get('USD', {})
             eth_price = eth_data.get('price', 0)
             eth_change = eth_data.get('percent_change_24h', 0)
             message += f"🔷 <b>ETHEREUM</b>\n"
             message += f"  {safe_format_price(eth_price)} | "
-            message += f"{'🟢' if eth_change > 0 else '🔴'} {safe_percent_change(eth_change)}%\n"
+            message += f"{'🟢' if (eth_change or 0) > 0 else '🔴'} {safe_percent_change(eth_change)}%\n"
         
         message += "\n"
         
         # Топ роста
-        message += "🚀 <b>ТОП РОСТА (24ч)</b>\n"
-        for crypto in top_gainers:
-            quote = crypto['quote']['USD']
-            symbol = crypto['symbol']
-            price = quote.get('price', 0)
-            change = quote.get('percent_change_24h', 0)
-            emoji = get_emoji(change)
-            message += f"{emoji} <b>{symbol}</b>\n"
-            message += f"  {safe_format_price(price)} | 🟢 +{safe_percent_change(change)}%\n"
-        
-        message += "\n"
+        if top_gainers:
+            message += "🚀 <b>ТОП РОСТА (24ч)</b>\n"
+            for crypto in top_gainers:
+                quote = crypto.get('quote', {}).get('USD', {})
+                symbol = crypto.get('symbol', 'UNKNOWN')
+                price = quote.get('price', 0)
+                change = quote.get('percent_change_24h', 0)
+                emoji = get_emoji(change)
+                message += f"{emoji} <b>{symbol}</b>\n"
+                message += f"  {safe_format_price(price)} | 🟢 +{safe_percent_change(change)}%\n"
+            message += "\n"
         
         # Топ падения
-        message += "💀 <b>ТОП ПАДЕНИЯ (24ч)</b>\n"
-        for crypto in top_losers:
-            quote = crypto['quote']['USD']
-            symbol = crypto['symbol']
-            price = quote.get('price', 0)
-            change = quote.get('percent_change_24h', 0)
-            emoji = get_emoji(change)
-            message += f"{emoji} <b>{symbol}</b>\n"
-            message += f"  {safe_format_price(price)} | 🔴 {safe_percent_change(change)}%\n"
-        
-        message += "\n"
+        if top_losers:
+            message += "💀 <b>ТОП ПАДЕНИЯ (24ч)</b>\n"
+            for crypto in top_losers:
+                quote = crypto.get('quote', {}).get('USD', {})
+                symbol = crypto.get('symbol', 'UNKNOWN')
+                price = quote.get('price', 0)
+                change = quote.get('percent_change_24h', 0)
+                emoji = get_emoji(change)
+                message += f"{emoji} <b>{symbol}</b>\n"
+                message += f"  {safe_format_price(price)} | 🔴 {safe_percent_change(change)}%\n"
+            message += "\n"
         
         # Традиционные активы
         message += "💼 <b>ТРАДИЦИОННЫЕ АКТИВЫ</b>\n"
         
         # Золото
-        if 'PAXG' in specific_assets:
-            gold_data = specific_assets['PAXG']['quote']['USD']
-            gold_price = gold_data.get('price', 0)
-            gold_change = gold_data.get('percent_change_24h', 0)
+        if gold_data:
+            gold_quote = gold_data.get('quote', {}).get('USD', {})
+            gold_price = gold_quote.get('price', 0)
+            gold_change = gold_quote.get('percent_change_24h', 0)
             message += f"🥇 <b>ЗОЛОТО (PAXG)</b>\n"
             message += f"  ${gold_price:,.2f} | "
-            message += f"{'🟢' if gold_change > 0 else '🔴'} {safe_percent_change(gold_change)}%\n"
+            message += f"{'🟢' if (gold_change or 0) > 0 else '🔴'} {safe_percent_change(gold_change)}%\n"
         
         # Акции
-        stocks_found = False
-        for stock_symbol in STOCKS_SYMBOLS:
-            if stock_symbol in specific_assets:
-                stock_data = specific_assets[stock_symbol]['quote']['USD']
-                stock_price = stock_data.get('price', 0)
-                stock_change = stock_data.get('percent_change_24h', 0)
-                if stock_price > 0:  # Проверяем что данные валидные
-                    change_emoji = '🟢' if stock_change > 0 else '🔴'
-                    message += f"📊 <b>{stock_symbol}</b> | ${stock_price:,.2f} | {change_emoji} {safe_percent_change(stock_change)}%\n"
-                    stocks_found = True
-        
-        if not stocks_found:
-            message += "📊 <i>Данные по акциям временно недоступны</i>\n"
+        if stocks_data:
+            for stock_symbol in STOCKS_SYMBOLS:
+                if stock_symbol in stocks_data:
+                    stock = stocks_data[stock_symbol]
+                    stock_price = stock.get('price', 0)
+                    stock_change = stock.get('change_percent', 0)
+                    if stock_price > 0:  # Проверяем что данные валидные
+                        change_emoji = '🟢' if stock_change > 0 else '🔴'
+                        message += f"📊 <b>{stock_symbol}</b> | ${stock_price:,.2f} | {change_emoji} {safe_percent_change(stock_change)}%\n"
         
         message += f"\n⏰ Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')} UTC\n"
         message += "\n💎 <b>MarvelMarket</b> - Твой гид в мире инвестиций!"
