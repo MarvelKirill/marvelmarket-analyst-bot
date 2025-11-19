@@ -24,7 +24,6 @@ CMC_FEAR_GREED_URL = "https://api.alternative.me/fng/"
 CMC_QUOTES_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 
 # Списки активов
-TOP_CRYPTO_SYMBOLS = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOT', 'LINK', 'MATIC']
 STABLE_COINS = ['USDT', 'USDC', 'BUSD', 'DAI', 'UST']
 STOCKS_SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA']
 METALS_SYMBOLS = ['PAXG']  # Золото
@@ -38,13 +37,17 @@ async def make_cmc_request(url, params=None):
         'Accept': 'application/json'
     }
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params) as response:
-            if response.status == 200:
-                return await response.json()
-            else:
-                logger.error(f"Ошибка CMC API: {response.status}")
-                return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logger.error(f"Ошибка CMC API: {response.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"Ошибка запроса к CMC: {e}")
+        return None
 
 async def get_crypto_data(limit=100):
     """Получаем данные по криптовалютам"""
@@ -59,10 +62,14 @@ async def get_global_metrics():
 
 async def get_fear_greed_index():
     """Получаем индекс страха и жадности"""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(CMC_FEAR_GREED_URL) as response:
-            data = await response.json()
-            return data['data'][0]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(CMC_FEAR_GREED_URL) as response:
+                data = await response.json()
+                return data['data'][0]
+    except Exception as e:
+        logger.error(f"Ошибка получения индекса страха/жадности: {e}")
+        return {'value': 50, 'value_classification': 'Neutral'}
 
 async def get_specific_assets(symbols):
     """Получаем данные по конкретным активам (акции, металлы)"""
@@ -70,65 +77,98 @@ async def get_specific_assets(symbols):
     data = await make_cmc_request(CMC_QUOTES_URL, params)
     return data['data'] if data else {}
 
-def format_number(num):
-    """Форматирование больших чисел"""
+def safe_format_number(num):
+    """Безопасное форматирование больших чисел"""
     if num is None:
         return "N/A"
-    if num >= 1_000_000_000_000:
-        return f"${num/1_000_000_000_000:.2f}T"
-    elif num >= 1_000_000_000:
-        return f"${num/1_000_000_000:.2f}B"
-    elif num >= 1_000_000:
-        return f"${num/1_000_000:.2f}M"
-    else:
-        return f"${num:,.2f}"
+    try:
+        num = float(num)
+        if num >= 1_000_000_000_000:
+            return f"${num/1_000_000_000_000:.2f}T"
+        elif num >= 1_000_000_000:
+            return f"${num/1_000_000_000:.2f}B"
+        elif num >= 1_000_000:
+            return f"${num/1_000_000:.2f}M"
+        else:
+            return f"${num:,.2f}"
+    except (TypeError, ValueError):
+        return "N/A"
 
 def get_emoji(change):
     """Получаем эмодзи по изменению цены"""
     if change is None:
         return "❓"
-    if change > 10:
-        return "🚀"
-    elif change > 5:
-        return "🔥"
-    elif change > 0:
-        return "📈"
-    elif change > -5:
-        return "📉"
-    elif change > -10:
-        return "💀"
-    else:
-        return "🪦"
+    try:
+        change = float(change)
+        if change > 10:
+            return "🚀"
+        elif change > 5:
+            return "🔥"
+        elif change > 0:
+            return "📈"
+        elif change > -5:
+            return "📉"
+        elif change > -10:
+            return "💀"
+        else:
+            return "🪦"
+    except (TypeError, ValueError):
+        return "❓"
 
 def get_fear_greed_emoji(value):
     """Эмодзи для индекса страха/жадности"""
-    if value < 25:
-        return "😱"
-    elif value < 45:
-        return "😰"
-    elif value < 55:
+    try:
+        value = int(value)
+        if value < 25:
+            return "😱"
+        elif value < 45:
+            return "😰"
+        elif value < 55:
+            return "😐"
+        elif value < 75:
+            return "😊"
+        else:
+            return "🤑"
+    except (TypeError, ValueError):
         return "😐"
-    elif value < 75:
-        return "😊"
-    else:
-        return "🤑"
 
-def format_price(price):
-    """Форматирование цены"""
-    if price < 0.01:
-        return f"${price:.8f}"
-    elif price < 1:
-        return f"${price:.6f}"
-    else:
-        return f"${price:,.2f}"
+def safe_format_price(price):
+    """Безопасное форматирование цены"""
+    if price is None:
+        return "N/A"
+    try:
+        price = float(price)
+        if price < 0.01:
+            return f"${price:.8f}"
+        elif price < 1:
+            return f"${price:.6f}"
+        else:
+            return f"${price:,.2f}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+def safe_percent_change(change):
+    """Безопасное форматирование процентного изменения"""
+    if change is None:
+        return "0.00"
+    try:
+        return f"{float(change):+.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
 
 async def create_crypto_message():
     try:
+        logger.info("Начинаем сбор данных...")
+        
         # Получаем все данные
         all_cryptos = await get_crypto_data(100)
         global_data = await get_global_metrics()
         fear_greed = await get_fear_greed_index()
         specific_assets = await get_specific_assets(STOCKS_SYMBOLS + METALS_SYMBOLS)
+        
+        logger.info(f"Получено криптовалют: {len(all_cryptos) if all_cryptos else 0}")
+        logger.info(f"Глобальные данные: {global_data is not None}")
+        logger.info(f"Активы: {len(specific_assets) if specific_assets else 0}")
         
         if not all_cryptos:
             return "❌ Ошибка при получении данных крипторынка"
@@ -143,57 +183,54 @@ async def create_crypto_message():
         # Топ роста (исключая BTC и ETH)
         top_gainers = sorted(
             [c for c in filtered_cryptos if c['symbol'] not in ['BTC', 'ETH']],
-            key=lambda x: x['quote']['USD']['percent_change_24h'],
+            key=lambda x: x['quote']['USD'].get('percent_change_24h', 0),
             reverse=True
         )[:5]
         
         # Топ падения (исключая BTC и ETH)
         top_losers = sorted(
             [c for c in filtered_cryptos if c['symbol'] not in ['BTC', 'ETH']],
-            key=lambda x: x['quote']['USD']['percent_change_24h']
-        )[:5]
-        
-        # Топ по капитализации (исключая BTC, ETH и те что уже в gainers/losers)
-        excluded_symbols = ['BTC', 'ETH'] + [c['symbol'] for c in top_gainers] + [c['symbol'] for c in top_losers]
-        top_by_market_cap = sorted(
-            [c for c in filtered_cryptos if c['symbol'] not in excluded_symbols],
-            key=lambda x: x['quote']['USD']['market_cap'],
-            reverse=True
+            key=lambda x: x['quote']['USD'].get('percent_change_24h', 0)
         )[:5]
         
         message = "🔥 <b>MARVEL MARKET DIGEST</b> 🔥\n\n"
         
         # Глобальная статистика
         if global_data:
-            total_cap = global_data['quote']['USD']['total_market_cap']
-            total_volume = global_data['quote']['USD']['total_volume_24h']
-            btc_dominance = global_data['btc_dominance']
-            eth_dominance = global_data['eth_dominance']
+            quote = global_data.get('quote', {}).get('USD', {})
+            total_cap = quote.get('total_market_cap')
+            total_volume = quote.get('total_volume_24h')
+            btc_dominance = global_data.get('btc_dominance', 0)
+            eth_dominance = global_data.get('eth_dominance', 0)
             
             message += "📊 <b>ОБЗОР РЫНКА</b>\n"
-            message += f"• Капитализация: {format_number(total_cap)}\n"
-            message += f"• Объем 24ч: {format_number(total_volume)}\n"
+            message += f"• Капитализация: {safe_format_number(total_cap)}\n"
+            message += f"• Объем 24ч: {safe_format_number(total_volume)}\n"
             message += f"• Доминирование BTC: {btc_dominance:.1f}%\n"
             message += f"• Доминирование ETH: {eth_dominance:.1f}%\n"
         
         # Индекс страха/жадности
-        fg_value = int(fear_greed['value'])
+        fg_value = fear_greed.get('value', 50)
         fg_emoji = get_fear_greed_emoji(fg_value)
-        message += f"• {fg_emoji} Индекс страха/жадности: <b>{fg_value}</b> ({fear_greed['value_classification']})\n\n"
+        message += f"• {fg_emoji} Индекс страха/жадности: <b>{fg_value}</b> ({fear_greed.get('value_classification', 'Neutral')})\n\n"
         
         # Биткоин и Эфир
         message += "👑 <b>ЛИДЕРЫ РЫНКА</b>\n"
         if btc:
             btc_data = btc['quote']['USD']
+            btc_price = btc_data.get('price', 0)
+            btc_change = btc_data.get('percent_change_24h', 0)
             message += f"₿ <b>BITCOIN</b>\n"
-            message += f"  {format_price(btc_data['price'])} | "
-            message += f"{'🟢' if btc_data['percent_change_24h'] > 0 else '🔴'} {btc_data['percent_change_24h']:+.2f}%\n"
+            message += f"  {safe_format_price(btc_price)} | "
+            message += f"{'🟢' if btc_change > 0 else '🔴'} {safe_percent_change(btc_change)}%\n"
         
         if eth:
             eth_data = eth['quote']['USD']
+            eth_price = eth_data.get('price', 0)
+            eth_change = eth_data.get('percent_change_24h', 0)
             message += f"🔷 <b>ETHEREUM</b>\n"
-            message += f"  {format_price(eth_data['price'])} | "
-            message += f"{'🟢' if eth_data['percent_change_24h'] > 0 else '🔴'} {eth_data['percent_change_24h']:+.2f}%\n"
+            message += f"  {safe_format_price(eth_price)} | "
+            message += f"{'🟢' if eth_change > 0 else '🔴'} {safe_percent_change(eth_change)}%\n"
         
         message += "\n"
         
@@ -201,9 +238,12 @@ async def create_crypto_message():
         message += "🚀 <b>ТОП РОСТА (24ч)</b>\n"
         for crypto in top_gainers:
             quote = crypto['quote']['USD']
-            emoji = get_emoji(quote['percent_change_24h'])
-            message += f"{emoji} <b>{crypto['symbol']}</b>\n"
-            message += f"  {format_price(quote['price'])} | 🟢 +{quote['percent_change_24h']:.2f}%\n"
+            symbol = crypto['symbol']
+            price = quote.get('price', 0)
+            change = quote.get('percent_change_24h', 0)
+            emoji = get_emoji(change)
+            message += f"{emoji} <b>{symbol}</b>\n"
+            message += f"  {safe_format_price(price)} | 🟢 +{safe_percent_change(change)}%\n"
         
         message += "\n"
         
@@ -211,9 +251,12 @@ async def create_crypto_message():
         message += "💀 <b>ТОП ПАДЕНИЯ (24ч)</b>\n"
         for crypto in top_losers:
             quote = crypto['quote']['USD']
-            emoji = get_emoji(quote['percent_change_24h'])
-            message += f"{emoji} <b>{crypto['symbol']}</b>\n"
-            message += f"  {format_price(quote['price'])} | 🔴 {quote['percent_change_24h']:+.2f}%\n"
+            symbol = crypto['symbol']
+            price = quote.get('price', 0)
+            change = quote.get('percent_change_24h', 0)
+            emoji = get_emoji(change)
+            message += f"{emoji} <b>{symbol}</b>\n"
+            message += f"  {safe_format_price(price)} | 🔴 {safe_percent_change(change)}%\n"
         
         message += "\n"
         
@@ -222,17 +265,27 @@ async def create_crypto_message():
         
         # Золото
         if 'PAXG' in specific_assets:
-            gold = specific_assets['PAXG']['quote']['USD']
+            gold_data = specific_assets['PAXG']['quote']['USD']
+            gold_price = gold_data.get('price', 0)
+            gold_change = gold_data.get('percent_change_24h', 0)
             message += f"🥇 <b>ЗОЛОТО (PAXG)</b>\n"
-            message += f"  ${gold['price']:,.2f} | "
-            message += f"{'🟢' if gold['percent_change_24h'] > 0 else '🔴'} {gold['percent_change_24h']:+.2f}%\n"
+            message += f"  ${gold_price:,.2f} | "
+            message += f"{'🟢' if gold_change > 0 else '🔴'} {safe_percent_change(gold_change)}%\n"
         
         # Акции
+        stocks_found = False
         for stock_symbol in STOCKS_SYMBOLS:
             if stock_symbol in specific_assets:
-                stock = specific_assets[stock_symbol]['quote']['USD']
-                change_emoji = '🟢' if stock['percent_change_24h'] > 0 else '🔴'
-                message += f"📊 <b>{stock_symbol}</b> | ${stock['price']:,.2f} | {change_emoji} {stock['percent_change_24h']:+.2f}%\n"
+                stock_data = specific_assets[stock_symbol]['quote']['USD']
+                stock_price = stock_data.get('price', 0)
+                stock_change = stock_data.get('percent_change_24h', 0)
+                if stock_price > 0:  # Проверяем что данные валидные
+                    change_emoji = '🟢' if stock_change > 0 else '🔴'
+                    message += f"📊 <b>{stock_symbol}</b> | ${stock_price:,.2f} | {change_emoji} {safe_percent_change(stock_change)}%\n"
+                    stocks_found = True
+        
+        if not stocks_found:
+            message += "📊 <i>Данные по акциям временно недоступны</i>\n"
         
         message += f"\n⏰ Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')} UTC\n"
         message += "\n💎 <b>MarvelMarket</b> - Твой гид в мире инвестиций!"
@@ -240,8 +293,8 @@ async def create_crypto_message():
         return message
     
     except Exception as e:
-        logger.error(f"Ошибка в create_crypto_message: {e}")
-        return f"❌ Ошибка при получении данных: {str(e)}"
+        logger.error(f"Ошибка в create_crypto_message: {e}", exc_info=True)
+        return f"❌ Ошибка при формировании отчета: {str(e)}"
 
 async def send_updates():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
