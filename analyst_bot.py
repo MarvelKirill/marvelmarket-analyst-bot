@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 CMC_CRYPTO_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
 CMC_GLOBAL_URL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
 CMC_FEAR_GREED_URL = "https://api.alternative.me/fng/"
+CMC_GOLD_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"  # ← ДОБАВЬ ЭТУ СТРОКУ!
 YAHOO_FINANCE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
 # Списки активов
