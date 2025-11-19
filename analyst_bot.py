@@ -11,7 +11,6 @@ import logging
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 CMC_API_KEY = os.environ.get('CMC_API_KEY')
-FINNHUB_API_KEY = os.environ.get('FINNHUB_API_KEY', 'cn5l71pr01qusj7k9e10cn5l71pr01qusj7k9e1g')  # бесплатный ключ
 PORT = int(os.environ.get('PORT', 10000))
 
 # Настройка логирования
@@ -23,7 +22,7 @@ CMC_CRYPTO_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/l
 CMC_GLOBAL_URL = "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
 CMC_FEAR_GREED_URL = "https://api.alternative.me/fng/"
 CMC_GOLD_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-FINNHUB_URL = "https://finnhub.io/api/v1/quote"
+YAHOO_FINANCE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
 # Списки активов
 STABLE_COINS = ['USDT', 'USDC', 'BUSD', 'DAI', 'UST']
@@ -81,40 +80,47 @@ async def get_gold_price():
     return None
 
 async def get_stock_data(symbol):
-    """Получаем данные по акциям через Finnhub API"""
-    params = {
-        'symbol': symbol,
-        'token': FINNHUB_API_KEY
+    """Получаем данные по акциям через Yahoo Finance API"""
+    url = f"{YAHOO_FINANCE_URL}{symbol}"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'application/json'
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(FINNHUB_URL, params=params) as response:
+            async with session.get(url, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
                     
-                    current_price = data.get('c', 0)  # текущая цена
-                    previous_close = data.get('pc', current_price)  # цена закрытия предыдущего дня
-                    change = data.get('d', 0)  # изменение цены
-                    change_percent = data.get('dp', 0)  # изменение в процентах
+                    if 'chart' not in data or 'result' not in data['chart'] or not data['chart']['result']:
+                        return None
                     
-                    # Если процент изменения не получен, вычисляем вручную
-                    if change_percent == 0 and previous_close and previous_close > 0 and current_price > 0:
+                    result = data['chart']['result'][0]
+                    meta = result['meta']
+                    
+                    current_price = meta.get('regularMarketPrice', 0)
+                    previous_close = meta.get('previousClose', current_price)
+                    
+                    # Вычисляем процент изменения
+                    if previous_close and current_price and previous_close > 0:
                         change_percent = ((current_price - previous_close) / previous_close) * 100
+                    else:
+                        change_percent = 0
                     
                     logger.info(f"Акция {symbol}: цена={current_price}, изменение={change_percent:.2f}%")
                     
                     return {
                         'symbol': symbol,
                         'price': current_price,
-                        'change_percent': change_percent,
-                        'change_amount': change
+                        'change_percent': change_percent
                     }
                 else:
-                    logger.warning(f"Ошибка Finnhub для {symbol}: {response.status}")
+                    logger.warning(f"Ошибка Yahoo Finance для {symbol}: {response.status}")
                     return None
     except Exception as e:
-        logger.error(f"Ошибка Finnhub для {symbol}: {e}")
+        logger.error(f"Ошибка Yahoo Finance для {symbol}: {e}")
         return None
 
 async def get_all_stocks_data():
@@ -262,7 +268,7 @@ async def create_crypto_message():
             message += f"• Капитализация: {safe_format_number(total_cap)}\n"
             message += f"• Объем 24ч: {safe_format_number(total_volume)}\n"
             message += f"• Доминирование BTC: {btc_dominance:.1f}%\n"
-            message += f"• Доминирование ETH: {eth_dominance:.1f}%\n"
+            message += f"• Доминирование ETH: {eth_dominance:.1f}%\n\n"
         
         # Индекс страха/жадности
         fg_value = fear_greed.get('value', 50)
@@ -277,7 +283,7 @@ async def create_crypto_message():
             btc_change = btc_data.get('percent_change_24h', 0)
             message += f"₿ <b>BITCOIN</b>\n"
             message += f"  {safe_format_price(btc_price)} | "
-            message += f"{'🟢' if (btc_change or 0) > 0 else '🔴'} {safe_percent_change(btc_change)}%\n"
+            message += f"{'🟢' if (btc_change or 0) > 0 else '🔴'} {safe_percent_change(btc_change)}%\n\n"
         
         if eth:
             eth_data = eth.get('quote', {}).get('USD', {})
@@ -285,9 +291,7 @@ async def create_crypto_message():
             eth_change = eth_data.get('percent_change_24h', 0)
             message += f"🔷 <b>ETHEREUM</b>\n"
             message += f"  {safe_format_price(eth_price)} | "
-            message += f"{'🟢' if (eth_change or 0) > 0 else '🔴'} {safe_percent_change(eth_change)}%\n"
-        
-        message += "\n"
+            message += f"{'🟢' if (eth_change or 0) > 0 else '🔴'} {safe_percent_change(eth_change)}%\n\n"
         
         # Топ роста
         if top_gainers:
@@ -299,8 +303,7 @@ async def create_crypto_message():
                 change = quote.get('percent_change_24h', 0)
                 emoji = get_emoji(change)
                 message += f"{emoji} <b>{symbol}</b>\n"
-                message += f"  {safe_format_price(price)} | 🟢 +{safe_percent_change(change)}%\n"
-            message += "\n"
+                message += f"  {safe_format_price(price)} | 🟢 +{safe_percent_change(change)}%\n\n"
         
         # Топ падения
         if top_losers:
@@ -312,11 +315,10 @@ async def create_crypto_message():
                 change = quote.get('percent_change_24h', 0)
                 emoji = get_emoji(change)
                 message += f"{emoji} <b>{symbol}</b>\n"
-                message += f"  {safe_format_price(price)} | 🔴 {safe_percent_change(change)}%\n"
-            message += "\n"
+                message += f"  {safe_format_price(price)} | 🔴 {safe_percent_change(change)}%\n\n"
         
         # Традиционные активы
-        message += "💼 <b>ТРАДИЦИОННЫЕ АКТИВЫ</b>\n"
+        message += "💼 <b>ТРАДИЦИОННЫЕ АКТИВЫ</b>\n\n"
         
         # Золото
         if gold_data:
@@ -325,10 +327,11 @@ async def create_crypto_message():
             gold_change = gold_quote.get('percent_change_24h', 0)
             message += f"🥇 <b>ЗОЛОТО (PAXG)</b>\n"
             message += f"  ${gold_price:,.2f} | "
-            message += f"{'🟢' if (gold_change or 0) > 0 else '🔴'} {safe_percent_change(gold_change)}%\n"
+            message += f"{'🟢' if (gold_change or 0) > 0 else '🔴'} {safe_percent_change(gold_change)}%\n\n"
         
         # Акции
         if stocks_data:
+            message += "📈 <b>ТОП АКЦИИ США</b>\n"
             for stock_symbol in STOCKS_SYMBOLS:
                 if stock_symbol in stocks_data:
                     stock = stocks_data[stock_symbol]
@@ -336,9 +339,13 @@ async def create_crypto_message():
                     stock_change = stock.get('change_percent', 0)
                     if stock_price > 0:  # Проверяем что данные валидные
                         change_emoji = '🟢' if stock_change > 0 else '🔴'
-                        message += f"📊 <b>{stock_symbol}</b> | ${stock_price:,.2f} | {change_emoji} {safe_percent_change(stock_change)}%\n"
+                        message += f"• <b>{stock_symbol}</b> | ${stock_price:,.2f} | {change_emoji} {safe_percent_change(stock_change)}%\n"
+            message += "\n"
+        else:
+            message += "📈 <b>ТОП АКЦИИ США</b>\n"
+            message += "• <i>Данные по акциям временно недоступны</i>\n\n"
         
-        message += f"\n⏰ Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')} UTC\n"
+        message += f"⏰ Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')} UTC\n"
         message += "\n💎 <b>MarvelMarket</b> - Твой гид в мире инвестиций!"
         
         return message
